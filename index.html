@@ -1,0 +1,286 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>상가업소 검색 지도</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<style>
+  :root { color-scheme: light; --navy:#16324f; --blue:#2463eb; --line:#dbe2ea; --muted:#64748b; }
+  * { box-sizing:border-box; }
+  body { margin:0; font-family:system-ui,-apple-system,"Malgun Gothic",sans-serif; color:#172033; background:#f4f7fb; }
+  header { padding:22px clamp(16px,4vw,42px); background:var(--navy); color:white; }
+  header h1 { margin:0 0 6px; font-size:clamp(21px,3vw,30px); }
+  header p { margin:0; color:#dce8f5; font-size:14px; }
+  main { max-width:1450px; margin:0 auto; padding:18px; }
+  .panel { background:white; border:1px solid var(--line); border-radius:14px; padding:18px; box-shadow:0 3px 12px #0f172a08; }
+  .controls { display:grid; grid-template-columns:minmax(240px,1.2fr) minmax(240px,1fr); gap:14px; margin-bottom:14px; }
+  h2 { margin:0 0 12px; font-size:17px; }
+  .hint { color:var(--muted); font-size:13px; line-height:1.55; }
+  .dropzone { display:block; border:2px dashed #b8c7da; background:#f8fbff; border-radius:10px; padding:18px; text-align:center; cursor:pointer; }
+  .dropzone.drag { border-color:var(--blue); background:#edf4ff; }
+  input[type=file] { max-width:100%; }
+  input[type=search] { width:100%; padding:12px 13px; border:1px solid #cbd5e1; border-radius:9px; font-size:15px; margin-bottom:10px; }
+  button,.download-link { display:inline-block; border:0; border-radius:9px; padding:10px 13px; font-size:14px; font-weight:650; cursor:pointer; text-decoration:none; }
+  button.primary { background:var(--blue); color:white; }
+  button.secondary,.download-link { background:#eaf0f8; color:#17324f; }
+  button:disabled { opacity:.45; cursor:not-allowed; }
+  .actions { display:flex; gap:8px; flex-wrap:wrap; }
+  .status { margin-top:12px; padding:10px 12px; background:#f1f5f9; border-radius:9px; font-size:13px; line-height:1.5; white-space:pre-line; }
+  .status.error { color:#991b1b; background:#fef2f2; }
+  .status.success { color:#166534; background:#f0fdf4; }
+  .workspace { display:grid; grid-template-columns:minmax(0,1.7fr) minmax(280px,1fr); gap:14px; }
+  #map { height: min(68vh,720px); min-height:420px; border-radius:10px; background:#e8edf2; }
+  .results-head { display:flex; justify-content:space-between; align-items:center; gap:8px; margin-bottom:10px; }
+  .count { font-weight:750; color:var(--blue); }
+  .table-wrap { overflow:auto; max-height: min(62vh,650px); border:1px solid var(--line); border-radius:9px; }
+  table { width:100%; border-collapse:collapse; font-size:13px; }
+  th,td { padding:9px 10px; text-align:left; border-bottom:1px solid #e8edf3; vertical-align:top; }
+  th { background:#f8fafc; position:sticky; top:0; z-index:1; }
+  td { max-width:220px; overflow-wrap:anywhere; }
+  tr:last-child td { border-bottom:0; }
+  .empty { color:var(--muted); text-align:center; padding:24px 10px; font-size:14px; }
+  footer { padding:18px 4px 6px; color:var(--muted); font-size:12px; line-height:1.6; }
+  @media(max-width:900px) { .controls,.workspace { grid-template-columns:1fr; } #map { min-height:360px; height:52vh; } .table-wrap { max-height:420px; } }
+</style>
+</head>
+<body>
+<header>
+  <h1>상가업소 검색 지도</h1>
+  <p>CSV 업로드 · 상호명 부분 검색 · 지도 시각화 · CSV/GeoJSON 다운로드</p>
+</header>
+<main>
+  <section class="controls">
+    <div class="panel">
+      <h2>1. 상가업소 CSV 업로드</h2>
+      <label class="dropzone" id="dropzone" for="csvFile">
+        <strong>CSV 파일을 선택하거나 이곳에 끌어다 놓으세요</strong><br>
+        <span class="hint">파일은 브라우저 안에서만 처리되며 서버로 업로드되지 않습니다.</span><br><br>
+        <input id="csvFile" type="file" accept=".csv,text/csv">
+      </label>
+      <div class="hint" style="margin-top:10px">필수 컬럼: 상호명, 지점명, 도로명, 경도, 위도</div>
+      <div id="fileStatus" class="status" role="status">CSV 파일을 불러와 주세요.</div>
+    </div>
+    <div class="panel">
+      <h2>2. 상호명 검색</h2>
+      <label for="searchInput" class="hint">검색할 상호명 또는 문자열</label>
+      <input id="searchInput" type="search" placeholder="예: 스타벅스" autocomplete="off" disabled>
+      <div class="actions">
+        <button id="searchBtn" class="primary" disabled>검색하기</button>
+        <button id="resetBtn" class="secondary" disabled>전체 보기</button>
+      </div>
+      <div id="searchStatus" class="status">CSV 업로드 후 검색할 수 있습니다.</div>
+      <div class="actions" style="margin-top:10px">
+        <button id="csvDownload" class="secondary" disabled>결과 CSV 저장</button>
+        <button id="geoDownload" class="secondary" disabled>결과 GeoJSON 저장</button>
+      </div>
+    </div>
+  </section>
+
+  <section class="workspace">
+    <div class="panel">
+      <div class="results-head"><h2>3. 지도</h2><span class="hint">마커를 누르면 매장 정보 표시</span></div>
+      <div id="map" aria-label="검색된 매장 위치 지도"></div>
+      <p class="hint">지도 타일은 OpenStreetMap에서 가져옵니다. 로컬 파일(file://) 환경에서 타일이 표시되지 않으면 GitHub Pages 등 HTTPS 웹 호스팅으로 실행해 보세요.</p>
+    </div>
+    <div class="panel">
+      <div class="results-head"><h2>4. 검색 결과</h2><span id="resultCount" class="count">0건</span></div>
+      <div id="resultsTable" class="table-wrap"><div class="empty">CSV 파일을 업로드하면 결과가 표시됩니다.</div></div>
+    </div>
+  </section>
+  <footer>
+    데이터 예시: 공공데이터포털의 소상공인시장진흥공단_상가(상권)정보.<br>
+    좌표가 숫자가 아니거나 경도·위도가 유효 범위를 벗어난 행은 지도 표출 및 GeoJSON 결과에서 제외될 수 있습니다. CSV 검색 결과에는 해당 행도 포함됩니다.
+  </footer>
+</main>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js"></script>
+<script>
+(() => {
+  "use strict";
+  const REQUIRED = ["상호명", "지점명", "도로명", "경도", "위도"];
+  const el = id => document.getElementById(id);
+  const fileInput = el("csvFile"), dropzone = el("dropzone");
+  const searchInput = el("searchInput"), searchBtn = el("searchBtn"), resetBtn = el("resetBtn");
+  const csvDownload = el("csvDownload"), geoDownload = el("geoDownload");
+  const fileStatus = el("fileStatus"), searchStatus = el("searchStatus");
+  const resultCount = el("resultCount"), resultsTable = el("resultsTable");
+  let allRows = [], filteredRows = [], headers = [], sourceName = "상가업소";
+  let markerLayer = null;
+
+  const map = L.map("map", { preferCanvas: true }).setView([37.5665, 126.9780], 11);
+  L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+    maxZoom: 19,
+    attribution: '&copy; <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a>'
+  }).addTo(map);
+  markerLayer = L.layerGroup().addTo(map);
+
+  function setStatus(node, message, type="") {
+    node.textContent = message;
+    node.className = "status" + (type ? " " + type : "");
+  }
+  function cleanHeader(value) {
+    return String(value ?? "").replace(/^\uFEFF/, "").trim();
+  }
+  function normalizeRow(row) {
+    const result = {};
+    for (const [key, value] of Object.entries(row)) result[cleanHeader(key)] = value == null ? "" : String(value).trim();
+    return result;
+  }
+  function validCoordinates(row) {
+    const lon = Number(String(row["경도"] ?? "").replace(/,/g, ""));
+    const lat = Number(String(row["위도"] ?? "").replace(/,/g, ""));
+    return row["경도"] !== "" && row["위도"] !== "" &&
+      Number.isFinite(lon) && Number.isFinite(lat) &&
+      lon >= -180 && lon <= 180 && lat >= -90 && lat <= 90 &&
+      !(lon === 0 && lat === 0);
+  }
+  function coords(row) {
+    return [Number(String(row["위도"]).replace(/,/g, "")), Number(String(row["경도"]).replace(/,/g, ""))];
+  }
+  function safeText(value) {
+    return String(value ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+  }
+  function popupHtml(row) {
+    return `<strong>${safeText(row["상호명"])}</strong><br>` +
+      `지점명: ${safeText(row["지점명"] || "-")}<br>` +
+      `도로명: ${safeText(row["도로명"] || "-")}`;
+  }
+  function renderResults(rows) {
+    resultCount.textContent = `${rows.length.toLocaleString()}건`;
+    if (!rows.length) {
+      resultsTable.innerHTML = '<div class="empty">검색 결과가 없습니다. 다른 상호명을 입력해 보세요.</div>';
+      return;
+    }
+    const shown = rows.slice(0, 500);
+    const table = document.createElement("table");
+    table.innerHTML = "<thead><tr><th>상호명</th><th>지점명</th><th>도로명</th></tr></thead>";
+    const tbody = document.createElement("tbody");
+    for (const row of shown) {
+      const tr = document.createElement("tr");
+      tr.innerHTML = `<td>${safeText(row["상호명"])}</td><td>${safeText(row["지점명"] || "-")}</td><td>${safeText(row["도로명"] || "-")}</td>`;
+      tbody.appendChild(tr);
+    }
+    table.appendChild(tbody);
+    resultsTable.replaceChildren(table);
+    if (rows.length > shown.length) {
+      const note = document.createElement("div");
+      note.className = "hint";
+      note.style.padding = "10px";
+      note.textContent = `표에는 처음 ${shown.length.toLocaleString()}건만 표시합니다. 전체 ${rows.length.toLocaleString()}건은 다운로드할 수 있습니다.`;
+      resultsTable.appendChild(note);
+    }
+  }
+  function renderMap(rows) {
+    markerLayer.clearLayers();
+    const bounds = [];
+    let skipped = 0;
+    // 화면 반응성을 위해 지도 마커는 최대 5,000개까지만 그립니다. 검색 결과 파일에는 전부 포함됩니다.
+    const mapRows = rows.filter(validCoordinates);
+    skipped = rows.length - mapRows.length;
+    for (const row of mapRows.slice(0, 5000)) {
+      const [lat, lon] = coords(row);
+      const marker = L.marker([lat, lon]).bindPopup(popupHtml(row));
+      marker.addTo(markerLayer);
+      bounds.push([lat, lon]);
+    }
+    if (bounds.length === 1) map.setView(bounds[0], 16);
+    else if (bounds.length > 1) map.fitBounds(bounds, { padding: [24, 24], maxZoom: 16 });
+    else map.setView([37.5665, 126.9780], 11);
+    return { mapped: Math.min(mapRows.length, 5000), skipped, totalValid: mapRows.length };
+  }
+  function updateView(rows, messagePrefix="검색 완료") {
+    filteredRows = rows;
+    renderResults(rows);
+    const stats = renderMap(rows);
+    csvDownload.disabled = rows.length === 0;
+    geoDownload.disabled = rows.length === 0;
+    const markerNote = stats.totalValid > 5000 ? " 지도 마커는 성능을 위해 5,000개까지만 표시했습니다." : "";
+    const skippedNote = stats.skipped ? ` 좌표 오류/누락 ${stats.skipped.toLocaleString()}건은 지도에서 제외했습니다.` : "";
+    setStatus(searchStatus, `${messagePrefix}: ${rows.length.toLocaleString()}건.${markerNote}${skippedNote}`, rows.length ? "success" : "");
+  }
+  function runSearch() {
+    const term = searchInput.value.trim().toLocaleLowerCase();
+    const matches = term
+      ? allRows.filter(row => String(row["상호명"] ?? "").toLocaleLowerCase().includes(term))
+      : allRows.slice();
+    updateView(matches, term ? `"${searchInput.value.trim()}" 검색` : "전체 데이터");
+  }
+  function loadFile(file) {
+    if (!file) return;
+    if (!/\.csv$/i.test(file.name) && file.type !== "text/csv") {
+      setStatus(fileStatus, "CSV 파일을 선택해 주세요.", "error"); return;
+    }
+    sourceName = file.name.replace(/\.csv$/i, "") || "상가업소";
+    setStatus(fileStatus, `파일 읽는 중: ${file.name}\n파일 크기: ${(file.size / (1024*1024)).toFixed(1)} MB`);
+    // PapaParse의 worker 모드로 파싱을 별도 작업에서 처리해 UI 멈춤을 줄입니다.
+    Papa.parse(file, {
+      header: true, skipEmptyLines: "greedy", encoding: "UTF-8", worker: true,
+      complete: result => {
+        const parsedHeaders = (result.meta.fields || []).map(cleanHeader);
+        const missing = REQUIRED.filter(field => !parsedHeaders.includes(field));
+        if (missing.length) {
+          allRows = []; filteredRows = []; headers = [];
+          searchInput.disabled = searchBtn.disabled = resetBtn.disabled = true;
+          csvDownload.disabled = geoDownload.disabled = true;
+          setStatus(fileStatus, `필수 컬럼이 없습니다: ${missing.join(", ")}\nCSV 헤더를 확인해 주세요.`, "error");
+          setStatus(searchStatus, "필수 컬럼 검증에 실패했습니다.", "error");
+          renderResults([]); markerLayer.clearLayers();
+          return;
+        }
+        headers = parsedHeaders;
+        allRows = result.data.map(normalizeRow).filter(row => Object.values(row).some(v => v !== ""));
+        searchInput.disabled = searchBtn.disabled = resetBtn.disabled = false;
+        searchInput.value = "";
+        setStatus(fileStatus, `불러오기 완료: ${file.name}\n전체 데이터 ${allRows.length.toLocaleString()}건 · 컬럼 ${headers.length}개` +
+          (result.errors.length ? `\n파싱 경고 ${result.errors.length}건이 있습니다.` : ""), "success");
+        updateView(allRows, "전체 데이터 표시");
+      },
+      error: error => setStatus(fileStatus, `CSV를 읽지 못했습니다: ${error.message}`, "error")
+    });
+  }
+  function downloadBlob(blob, filename) {
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url; a.download = filename;
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  }
+  function downloadCSV() {
+    if (!filteredRows.length) return;
+    const fields = headers.length ? headers : REQUIRED;
+    const csv = "\uFEFF" + Papa.unparse({ fields, data: filteredRows.map(row => fields.map(field => row[field] ?? "")) });
+    downloadBlob(new Blob([csv], {type:"text/csv;charset=utf-8;"}), `${sourceName}_검색결과.csv`);
+  }
+  function downloadGeoJSON() {
+    if (!filteredRows.length) return;
+    const features = [];
+    for (const row of filteredRows) {
+      if (!validCoordinates(row)) continue;
+      const [lat, lon] = coords(row);
+      const properties = {};
+      for (const field of headers) properties[field] = row[field] ?? "";
+      features.push({ type:"Feature", geometry:{ type:"Point", coordinates:[lon,lat] }, properties });
+    }
+    const geojson = { type:"FeatureCollection", name:`${sourceName}_검색결과`, features };
+    downloadBlob(new Blob([JSON.stringify(geojson, null, 2)], {type:"application/geo+json;charset=utf-8;"}), `${sourceName}_검색결과.geojson`);
+    if (!features.length) setStatus(searchStatus, "검색 결과는 있지만 유효한 좌표가 없어 GeoJSON에 저장할 위치가 없습니다.", "error");
+  }
+
+  fileInput.addEventListener("change", e => loadFile(e.target.files[0]));
+  searchBtn.addEventListener("click", runSearch);
+  searchInput.addEventListener("keydown", e => { if (e.key === "Enter") runSearch(); });
+  resetBtn.addEventListener("click", () => { searchInput.value = ""; updateView(allRows, "전체 데이터"); });
+  csvDownload.addEventListener("click", downloadCSV);
+  geoDownload.addEventListener("click", downloadGeoJSON);
+  dropzone.addEventListener("dragover", e => { e.preventDefault(); dropzone.classList.add("drag"); });
+  dropzone.addEventListener("dragleave", () => dropzone.classList.remove("drag"));
+  dropzone.addEventListener("drop", e => {
+    e.preventDefault(); dropzone.classList.remove("drag");
+    const file = e.dataTransfer.files && e.dataTransfer.files[0];
+    if (file) { fileInput.files = e.dataTransfer.files; loadFile(file); }
+  });
+})();
+</script>
+</body>
+</html>
